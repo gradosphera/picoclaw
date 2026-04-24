@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func main() {
@@ -13,8 +14,36 @@ func main() {
 		os.Exit(2)
 	}
 
-	src := os.Args[1]
-	dst := os.Args[2]
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "locate repo root: %v\n", err)
+		os.Exit(1)
+	}
+
+	src, err := normalizePathArg(os.Args[1], repoRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve src path: %v\n", err)
+		os.Exit(1)
+	}
+
+	dst, err := normalizePathArg(os.Args[2], repoRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve dst path: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := ensurePathWithinRepo(repoRoot, src); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid src path: %v\n", err)
+		os.Exit(1)
+	}
+	if err := ensurePathWithinRepo(repoRoot, dst); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid dst path: %v\n", err)
+		os.Exit(1)
+	}
+	if samePath(repoRoot, dst) {
+		fmt.Fprintln(os.Stderr, "invalid dst path: destination cannot be repo root")
+		os.Exit(1)
+	}
 
 	if err := os.RemoveAll(dst); err != nil {
 		fmt.Fprintf(os.Stderr, "remove %s: %v\n", dst, err)
@@ -25,6 +54,53 @@ func main() {
 		fmt.Fprintf(os.Stderr, "copy %s -> %s: %v\n", src, dst, err)
 		os.Exit(1)
 	}
+}
+
+func findRepoRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	cur, err := filepath.Abs(wd)
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
+			return filepath.Clean(cur), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", fmt.Errorf("could not find .git from %s", wd)
+		}
+		cur = parent
+	}
+}
+
+func normalizePathArg(arg, repoRoot string) (string, error) {
+	resolved := strings.ReplaceAll(arg, "${codespace}", repoRoot)
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func ensurePathWithinRepo(repoRoot, path string) error {
+	rel, err := filepath.Rel(repoRoot, path)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %s is outside repository root %s", path, repoRoot)
+	}
+	return nil
+}
+
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 func copyTree(src, dst string) error {
